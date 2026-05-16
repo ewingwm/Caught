@@ -67,6 +67,10 @@ document.getElementById('btn-play-again').addEventListener('click', () => {
   location.reload();
 });
 
+document.getElementById('btn-stay-in-room').addEventListener('click', () => {
+  socket.emit('lobby:rejoin');
+});
+
 // ── Socket events ─────────────────────────────────────────────────────────────
 
 socket.on('connect', () => { myId = socket.id; });

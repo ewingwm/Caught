@@ -28,7 +28,7 @@ function pickRespawnPoint(flowers, map) {
 
 const EFFECT_DURATION = {
   white_trillium: 5,
-  pink_trillium: 20,
+  pink_trillium: 5,
   red_trillium: 5,
 };
 

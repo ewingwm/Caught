@@ -33,10 +33,20 @@ function isBlockedByStream(x, y, radius, stream) {
   return true;
 }
 
-function resolveObstacleSlide(x, y, nx, ny, radius, map) {
-  if (!collidesWithObstacles(nx, ny, radius, map)) return { x: nx, y: ny };
-  if (!collidesWithObstacles(nx, y,  radius, map)) return { x: nx, y };
-  if (!collidesWithObstacles(x,  ny, radius, map)) return { x,  y: ny };
+function resolveObstacleSlide(x, y, nx, ny, radius, map, extraCircles) {
+  const blocked = (px, py) => {
+    if (collidesWithObstacles(px, py, radius, map)) return true;
+    if (extraCircles) {
+      for (const c of extraCircles) {
+        const minDist = radius + c.r;
+        if ((px - c.x) * (px - c.x) + (py - c.y) * (py - c.y) < minDist * minDist) return true;
+      }
+    }
+    return false;
+  };
+  if (!blocked(nx, ny)) return { x: nx, y: ny };
+  if (!blocked(nx, y))  return { x: nx, y };
+  if (!blocked(x,  ny)) return { x,  y: ny };
   return { x, y };
 }
 

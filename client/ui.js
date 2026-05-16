@@ -80,13 +80,8 @@ export function showEndScreen({ scores, winner }, myTeam) {
   document.getElementById('end-score-b-val').textContent = scores.B;
   document.getElementById('end-score-a').classList.toggle('winner', winner === 'A');
   document.getElementById('end-score-b').classList.toggle('winner', winner === 'B');
-
-  let sec = 10;
   const msg = document.getElementById('end-countdown-msg');
-  const tick = setInterval(() => {
-    msg.textContent = `Returning to menu in ${sec--}s…`;
-    if (sec < 0) { clearInterval(tick); show('screen-menu'); }
-  }, 1000);
+  if (msg) msg.textContent = 'Stay together for another round, or head back to the menu.';
 }
 
 export function showHUD(visible) {

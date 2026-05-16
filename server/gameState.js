@@ -1,6 +1,6 @@
 const {
   BASE_RADIUS, COLLECTION_RADIUS, SPEED_NORMAL,
-  SPEED_MAX_PENALTY, TRAIL_SPACING, BUTTERFLY_TARGET_COUNT,
+  SPEED_MAX_PENALTY, ACCEL_TIME_SEC, STOP_DAMPING_SEC, TRAIL_SPACING, BUTTERFLY_TARGET_COUNT,
   BUTTERFLY_RESPAWN_DELAY_SEC, POWERUP_RESPAWN_SEC, MAGNET_RADIUS,
   BASE_IMMUNITY_SEC, ROUND_DURATION, DISCONNECT_HOLD_SEC,
 } = require('./config');
@@ -9,20 +9,20 @@ const butterflyMod = require('./butterfly');
 const { resolveObstacleSlide, clampToMap, PLAYER_RADIUS } = require('./collision');
 const { checkTheft } = require('./theft');
 
-// Spawn positions near each base
+// Spawn positions inside each team's base. Players are arranged in a line
+// perpendicular to the base-enemy axis so they all start within the base
+// radius (their own base also functions as an enemy exclusion zone).
 function spawnPositions(map, team, count) {
   const base = map.bases[team];
   const otherTeam = team === 'A' ? 'B' : 'A';
   const other = map.bases[otherTeam];
-  // Face roughly toward the opposing base
   const dx = Math.sign(other.x - base.x) || 1;
   const dy = Math.sign(other.y - base.y) || 0;
   const positions = [];
   for (let i = 0; i < count; i++) {
-    const offset = (i - (count - 1) / 2) * 60;
-    // Place spawns 180 units toward the enemy, and offset perpendicular to the spawn-vector.
-    const px = base.x + dx * 180 - dy * offset;
-    const py = base.y + dy * 180 + dx * offset;
+    const offset = (i - (count - 1) / 2) * 40;
+    const px = base.x - dy * offset;
+    const py = base.y + dx * offset;
     positions.push({ x: px, y: py });
   }
   return positions;
@@ -46,6 +46,8 @@ function createPlayer(id, name, team, spawnPos, facingAngle) {
     disconnectAt: null,
     dx: 0,
     dy: 0,
+    vx: 0,
+    vy: 0,
   };
 }
 
@@ -177,12 +179,6 @@ class GameRoom {
       }
     }
 
-    const mag = Math.sqrt(p.dx * p.dx + p.dy * p.dy);
-    if (mag < 0.01) return;
-
-    const ndx = p.dx / mag;
-    const ndy = p.dy / mag;
-
     let speed = SPEED_NORMAL;
     const trailCount = p.trail.length;
     if (trailCount >= 10) speed *= SPEED_MAX_PENALTY;
@@ -199,15 +195,42 @@ class GameRoom {
       }
     }
 
-    const nx = p.x + ndx * speed * dt;
-    const ny = p.y + ndy * speed * dt;
+    const mag = Math.sqrt(p.dx * p.dx + p.dy * p.dy);
+    if (mag >= 0.01) {
+      const ndx = p.dx / mag;
+      const ndy = p.dy / mag;
+      const targetVx = ndx * speed;
+      const targetVy = ndy * speed;
+      const alpha = 1 - Math.exp(-dt / ACCEL_TIME_SEC);
+      p.vx += (targetVx - p.vx) * alpha;
+      p.vy += (targetVy - p.vy) * alpha;
+      p.angle = Math.atan2(ndy, ndx);
+    } else {
+      const decay = Math.exp(-dt / STOP_DAMPING_SEC);
+      p.vx *= decay;
+      p.vy *= decay;
+    }
 
-    const resolved = resolveObstacleSlide(p.x, p.y, nx, ny, PLAYER_RADIUS, this.map);
+    const speedNow = Math.hypot(p.vx, p.vy);
+    if (speedNow < 1) {
+      p.vx = 0;
+      p.vy = 0;
+      return;
+    }
+
+    const nx = p.x + p.vx * dt;
+    const ny = p.y + p.vy * dt;
+
+    const enemyBase = this.map.bases[p.team === 'A' ? 'B' : 'A'];
+    const enemyZone = [{ x: enemyBase.x, y: enemyBase.y, r: BASE_RADIUS }];
+    const resolved = resolveObstacleSlide(p.x, p.y, nx, ny, PLAYER_RADIUS, this.map, enemyZone);
     const clamped = clampToMap(resolved.x, resolved.y, PLAYER_RADIUS, this.map);
+    if (clamped.x === p.x && clamped.y === p.y) {
+      p.vx = 0;
+      p.vy = 0;
+    }
     p.x = clamped.x;
     p.y = clamped.y;
-
-    if (mag > 0.01) p.angle = Math.atan2(ndy, ndx);
 
     p.pathHistory.unshift({ x: p.x, y: p.y });
     const maxHistory = (p.trail.length + 2) * TRAIL_SPACING * 2;
@@ -233,8 +256,6 @@ class GameRoom {
       }
     }
 
-    const enemyTeam = p.team === 'A' ? 'B' : 'A';
-    const enemyBase = this.map.bases[enemyTeam];
     const distToEnemy = Math.hypot(p.x - enemyBase.x, p.y - enemyBase.y);
     if (distToBase < BASE_RADIUS || distToEnemy < BASE_RADIUS) {
       p.immuneUntil = now + BASE_IMMUNITY_SEC * 1000;

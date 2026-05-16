@@ -14,13 +14,16 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(express.static(path.join(__dirname, '../client')));
 
-gameLoop.init(io);
-
 // roomCode -> { players, host, mapId }
 // `mapId === null` means "random — server picks at game start".
 const lobbies = {};
 const socketToRoom = {}; // socketId -> roomCode
 const existingCodes = new Set();
+// roomCode -> { host, mapId } — kept while a game is running so we can
+// rebuild the lobby with the same host/map when the round ends.
+const roomMeta = {};
+
+gameLoop.init(io, onRoomEnd);
 
 const AVAILABLE_MAPS = listMaps();
 
@@ -44,6 +47,8 @@ function startGame(code) {
 
   // Resolve the map now (random pick happens here if mapId is null/missing).
   const map = resolveMap(lobby.mapId);
+  const hostId = lobby.host;
+  const requestedMapId = lobby.mapId;
 
   let countdown = COUNTDOWN_SEC;
   io.to(code).emit('game:countdown', { countdown });
@@ -55,6 +60,7 @@ function startGame(code) {
       clearInterval(timer);
       const room = new GameRoom(code, lobby.players, map);
       gameLoop.addRoom(room);
+      roomMeta[code] = { host: hostId, mapId: requestedMapId };
       io.to(code).emit('game:start', {
         teamAssignments: lobby.players.map(p => ({ id: p.id, team: p.team })),
         map: {
@@ -70,6 +76,39 @@ function startGame(code) {
       delete lobbies[code];
     }
   }, 1000);
+}
+
+// Called by gameLoop when a GameRoom enters phase 'ended'. We rebuild the
+// lobby for that code with the surviving players (so they can play again),
+// then evict every socket from the io room — clients have to explicitly emit
+// `lobby:rejoin` to opt back in, so end-screen broadcasts don't yank everyone
+// straight back to the lobby screen.
+function onRoomEnd(code, room) {
+  const meta = roomMeta[code];
+  delete roomMeta[code];
+
+  const survivors = Object.values(room.players)
+    .filter(p => !p.disconnected)
+    .map(p => ({ id: p.id, name: p.name, team: p.team, ready: false }));
+
+  if (survivors.length > 0) {
+    const hostStillHere = meta && survivors.some(p => p.id === meta.host);
+    lobbies[code] = {
+      players: survivors,
+      host: hostStillHere ? meta.host : survivors[0].id,
+      mapId: meta ? meta.mapId : null,
+    };
+  } else {
+    existingCodes.delete(code);
+  }
+
+  const sids = io.sockets.adapter.rooms.get(code);
+  if (sids) {
+    for (const sid of [...sids]) {
+      const s = io.sockets.sockets.get(sid);
+      if (s) s.leave(code);
+    }
+  }
 }
 
 io.on('connection', (socket) => {
@@ -192,6 +231,21 @@ io.on('connection', (socket) => {
     if (room) {
       room.playerDisconnect(socket.id);
     }
+  });
+
+  socket.on('lobby:rejoin', () => {
+    const code = socketToRoom[socket.id];
+    const lobby = getLobby(code);
+    if (!lobby) {
+      socket.emit('error', { code: 'NO_REJOIN', message: 'Room no longer available.' });
+      return;
+    }
+    if (!lobby.players.some(p => p.id === socket.id)) {
+      socket.emit('error', { code: 'NOT_IN_ROOM', message: 'You are no longer in this room.' });
+      return;
+    }
+    socket.join(code);
+    broadcastLobbyState(code);
   });
 
   socket.on('game:reconnect', ({ roomCode }) => {
